@@ -490,9 +490,10 @@
   }
 
   // ---------- Input ----------
+  const GAME_KEYS = [' ','arrowleft','arrowright','arrowup','arrowdown','a','d','w','s'];
   window.addEventListener('keydown', e => {
     keys[e.key.toLowerCase()] = true;
-    if (e.key === ' ') e.preventDefault();
+    if (GAME_KEYS.includes(e.key.toLowerCase())) e.preventDefault();
   });
   window.addEventListener('keyup', e => {
     keys[e.key.toLowerCase()] = false;
