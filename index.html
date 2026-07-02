@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星際闖關射擊</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body {
+    height:100%;
+    background:#05050f;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-family:"Microsoft JhengHei", "PingFang TC", sans-serif;
+    overflow:hidden;
+  }
+  #wrap {
+    position:relative;
+    width:480px;
+    height:720px;
+    max-width:100vw;
+    max-height:100vh;
+  }
+  canvas {
+    display:block;
+    background:radial-gradient(ellipse at center, #0a0a2a 0%, #000005 100%);
+    width:100%;
+    height:100%;
+    touch-action:none;
+    cursor:crosshair;
+  }
+  #hud {
+    position:absolute;
+    top:8px; left:8px; right:8px;
+    display:flex;
+    justify-content:space-between;
+    color:#e8f6ff;
+    font-size:16px;
+    text-shadow:0 0 6px rgba(80,180,255,0.8);
+    pointer-events:none;
+    letter-spacing:1px;
+  }
+  #overlay {
+    position:absolute;
+    inset:0;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    color:#eaf6ff;
+    background:rgba(2,2,10,0.72);
+    gap:14px;
+    padding:20px;
+  }
+  #overlay h1 {
+    font-size:34px;
+    color:#7fe0ff;
+    text-shadow:0 0 14px #2ad2ff;
+    letter-spacing:2px;
+  }
+  #overlay p {
+    font-size:14px;
+    line-height:1.7;
+    color:#c9d8e8;
+    max-width:360px;
+  }
+  #overlay button {
+    margin-top:8px;
+    padding:12px 34px;
+    font-size:17px;
+    border:none;
+    border-radius:30px;
+    background:linear-gradient(180deg,#39d0ff,#0a86c9);
+    color:#00131a;
+    font-weight:bold;
+    letter-spacing:2px;
+    cursor:pointer;
+    box-shadow:0 0 18px rgba(60,200,255,0.7);
+  }
+  #overlay button:active { transform:scale(0.96); }
+  .hidden { display:none !important; }
+  #mobileHint {
+    font-size:12px;
+    color:#7a8ba0;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="480" height="720"></canvas>
+  <div id="hud">
+    <span id="hudLevel">關卡 1</span>
+    <span id="hudScore">分數 0</span>
+    <span id="hudLives">❤❤❤</span>
+  </div>
+  <div id="overlay">
+    <h1>星際闖關射擊</h1>
+    <p>
+      電腦: 方向鍵 / WASD 移動,空白鍵 或 滑鼠左鍵 射擊(按住連發)。<br>
+      手機: 手指拖曳移動,自動連續射擊。<br><br>
+      共 5 關,越後面敵人越多越快,第 5 關是王,擊敗即通關!
+    </p>
+    <p id="mobileHint">碰到敵人或敵彈會扣血,3 條命用完遊戲結束。</p>
+    <button id="startBtn">開始遊戲</button>
+  </div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+  const hudLevel = document.getElementById('hudLevel');
+  const hudScore = document.getElementById('hudScore');
+  const hudLives = document.getElementById('hudLives');
+
+  const MAX_LEVEL = 5;
+
+  let keys = {};
+  let pointerActive = false;
+  let pointerX = null, pointerY = null;
+
+  let state = 'menu'; // menu | playing | levelClear | dead | win
+  let level = 1;
+  let score = 0;
+  let lives = 3;
+  let frame = 0;
+  let stars = [];
+
+  let player, bullets, enemies, enemyBullets, particles, powerups;
+  let levelTimer = 0;
+  let spawnQueue = [];
+  let boss = null;
+  let invincibleTimer = 0;
+  let stateTimer = 0;
+
+  function resetGameState(){
+    score = 0;
+    lives = 3;
+    level = 1;
+  }
+
+  function initStars(){
+    stars = [];
+    for (let i=0;i<90;i++){
+      stars.push({
+        x: Math.random()*W,
+        y: Math.random()*H,
+        speed: 0.5 + Math.random()*2.5,
+        size: Math.random()*2 + 0.5
+      });
+    }
+  }
+
+  function initPlayer(){
+    player = {
+      x: W/2, y: H-90,
+      w: 34, h: 34,
+      speed: 5.2,
+      cooldown: 0,
+      fireRate: 9
+    };
+  }
+
+  function buildLevel(lv){
+    bullets = [];
+    enemies = [];
+    enemyBullets = [];
+    particles = [];
+    powerups = [];
+    boss = null;
+    levelTimer = 0;
+    invincibleTimer = 90;
+
+    if (lv < MAX_LEVEL){
+      const waveCount = 3 + lv;
+      const perWave = 4 + lv;
+      spawnQueue = [];
+      for (let w=0; w<waveCount; w++){
+        for (let i=0; i<perWave; i++){
+          spawnQueue.push({
+            delay: w*70 + i*14,
+            type: (lv >= 3 && (i % 3 === 0)) ? 'zigzag' : 'basic',
+            col: i % perWave
+          });
+        }
+      }
+    } else {
+      spawnQueue = [];
+      boss = {
+        x: W/2, y: -80,
+        w: 110, h: 70,
+        hp: 220,
+        maxHp: 220,
+        speed: 2.2,
+        dir: 1,
+        cooldown: 0,
+        entering: true
+      };
+    }
+  }
+
+  function startGame(){
+    resetGameState();
+    initPlayer();
+    initStars();
+    buildLevel(level);
+    state = 'playing';
+    overlay.classList.add('hidden');
+    updateHud();
+  }
+
+  function nextLevel(){
+    level++;
+    if (level > MAX_LEVEL){
+      state = 'win';
+      showOverlay('全部過關!', `太厲害了,恭喜通過全部 ${MAX_LEVEL} 關!<br>最終分數: ${score}`, '再玩一次');
+      return;
+    }
+    initPlayer();
+    buildLevel(level);
+    state = 'playing';
+    updateHud();
+  }
+
+  function updateHud(){
+    hudLevel.textContent = '關卡 ' + level + (level>MAX_LEVEL?'':(level===MAX_LEVEL?' (BOSS)':''));
+    hudScore.textContent = '分數 ' + score;
+    hudLives.textContent = '❤'.repeat(Math.max(lives,0)) + '♡'.repeat(Math.max(3-lives,0));
+  }
+
+  function showOverlay(title, text, btnText){
+    overlay.querySelector('h1').textContent = title;
+    overlay.querySelector('p').innerHTML = text;
+    document.getElementById('mobileHint').classList.add('hidden');
+    startBtn.textContent = btnText;
+    overlay.classList.remove('hidden');
+  }
+
+  // ---------- Input ----------
+  window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    if (e.key === ' ') e.preventDefault();
+  });
+  window.addEventListener('keyup', e => {
+    keys[e.key.toLowerCase()] = false;
+  });
+
+  function canvasPos(clientX, clientY){
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left) * (W/rect.width),
+      y: (clientY - rect.top) * (H/rect.height)
+    };
+  }
+
+  canvas.addEventListener('mousedown', e => {
+    pointerActive = true;
+    const p = canvasPos(e.clientX, e.clientY);
+    pointerX = p.x; pointerY = p.y;
+  });
+  window.addEventListener('mouseup', () => { pointerActive = false; });
+  canvas.addEventListener('mousemove', e => {
+    const p = canvasPos(e.clientX, e.clientY);
+    pointerX = p.x; pointerY = p.y;
+  });
+
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    pointerActive = true;
+    const t = e.touches[0];
+    const p = canvasPos(t.clientX, t.clientY);
+    pointerX = p.x; pointerY = p.y;
+  }, {passive:false});
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    const t = e.touches[0];
+    const p = canvasPos(t.clientX, t.clientY);
+    pointerX = p.x; pointerY = p.y;
+  }, {passive:false});
+  canvas.addEventListener('touchend', e => {
+    e.preventDefault();
+    pointerActive = false;
+  }, {passive:false});
+
+  startBtn.addEventListener('click', () => {
+    if (state === 'menu' || state === 'dead' || state === 'win'){
+      startGame();
+    }
+  });
+
+  // ---------- Helpers ----------
+  function rectsOverlap(a,b){
+    return Math.abs(a.x-b.x) < (a.w+b.w)/2 && Math.abs(a.y-b.y) < (a.h+b.h)/2;
+  }
+
+  function spawnParticles(x,y,color,count){
+    for (let i=0;i<count;i++){
+      particles.push({
+        x, y,
+        vx: (Math.random()-0.5)*6,
+        vy: (Math.random()-0.5)*6,
+        life: 20 + Math.random()*15,
+        color
+      });
+    }
+  }
+
+  function spawnEnemy(type, col, totalCols){
+    const margin = 40;
+    const x = margin + (col % totalCols) * ((W-margin*2)/(totalCols-1||1));
+    enemies.push({
+      x, y: -30,
+      w: 28, h: 24,
+      vx: type==='zigzag' ? (Math.random()<0.5?-1:1)*2 : 0,
+      vy: 1.6 + level*0.15,
+      type,
+      hp: type==='zigzag'?2:1,
+      cooldown: 60 + Math.random()*80,
+      t: Math.random()*Math.PI*2
+    });
+  }
+
+  // ---------- Update ----------
+  function updatePlayer(){
+    if (invincibleTimer>0) invincibleTimer--;
+
+    let dx=0, dy=0;
+    if (keys['arrowleft']||keys['a']) dx -= 1;
+    if (keys['arrowright']||keys['d']) dx += 1;
+    if (keys['arrowup']||keys['w']) dy -= 1;
+    if (keys['arrowdown']||keys['s']) dy += 1;
+
+    if (dx!==0 || dy!==0){
+      const len = Math.hypot(dx,dy) || 1;
+      player.x += (dx/len) * player.speed;
+      player.y += (dy/len) * player.speed;
+    } else if (pointerActive && pointerX !== null){
+      const ddx = pointerX - player.x;
+      const ddy = pointerY - player.y;
+      const dist = Math.hypot(ddx,ddy);
+      if (dist > 3){
+        player.x += ddx/dist * Math.min(player.speed*1.5, dist);
+        player.y += ddy/dist * Math.min(player.speed*1.5, dist);
+      }
+    }
+
+    player.x = Math.max(player.w/2, Math.min(W-player.w/2, player.x));
+    player.y = Math.max(player.h/2, Math.min(H-player.h/2, player.y));
+
+    player.cooldown--;
+    const wantsFire = keys[' ']||keys['space']||pointerActive;
+    if (wantsFire && player.cooldown<=0){
+      bullets.push({x:player.x-9, y:player.y-18, vy:-9, w:4, h:12});
+      bullets.push({x:player.x+9, y:player.y-18, vy:-9, w:4, h:12});
+      player.cooldown = player.fireRate;
+    }
+  }
+
+  function updateBullets(){
+    for (let i=bullets.length-1;i>=0;i--){
+      const b = bullets[i];
+      b.y += b.vy;
+      if (b.y < -20) bullets.splice(i,1);
+    }
+    for (let i=enemyBullets.length-1;i>=0;i--){
+      const b = enemyBullets[i];
+      b.x += b.vx||0;
+      b.y += b.vy;
+      if (b.y > H+20 || b.x<-20 || b.x>W+20) enemyBullets.splice(i,1);
+    }
+  }
+
+  function updateEnemies(){
+    levelTimer++;
+    if (level < MAX_LEVEL){
+      while (spawnQueue.length && spawnQueue[0].delay <= levelTimer){
+        const s = spawnQueue.shift();
+        const totalCols = 4 + level;
+        spawnEnemy(s.type, s.col, totalCols);
+      }
+    }
+
+    for (let i=enemies.length-1;i>=0;i--){
+      const en = enemies[i];
+      en.y += en.vy;
+      en.t += 0.05;
+      if (en.type==='zigzag'){
+        en.x += Math.sin(en.t)*2.2;
+      }
+      en.x = Math.max(16, Math.min(W-16, en.x));
+
+      en.cooldown--;
+      if (en.cooldown<=0 && en.y>0 && en.y<H-60){
+        en.cooldown = 90 + Math.random()*60;
+        const ddx = player.x-en.x, ddy = player.y-en.y;
+        const d = Math.hypot(ddx,ddy)||1;
+        enemyBullets.push({x:en.x, y:en.y, vx:(ddx/d)*3.2, vy:(ddy/d)*3.2, w:5, h:5});
+      }
+
+      if (en.y > H+30){
+        enemies.splice(i,1);
+        continue;
+      }
+
+      for (let j=bullets.length-1;j>=0;j--){
+        const b = bullets[j];
+        if (rectsOverlap({x:b.x,y:b.y,w:b.w,h:b.h}, en)){
+          bullets.splice(j,1);
+          en.hp--;
+          spawnParticles(b.x,b.y,'#7fe0ff',4);
+          if (en.hp<=0){
+            score += en.type==='zigzag'?150:100;
+            spawnParticles(en.x,en.y,'#ffaa3c',14);
+            enemies.splice(i,1);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  function updateBoss(){
+    if (!boss) return;
+    if (boss.entering){
+      boss.y += 1.5;
+      if (boss.y >= 90) boss.entering = false;
+      return;
+    }
+    boss.x += boss.speed * boss.dir;
+    if (boss.x < 70 || boss.x > W-70) boss.dir *= -1;
+
+    boss.cooldown--;
+    if (boss.cooldown<=0){
+      boss.cooldown = 34;
+      const spread = 5;
+      for (let i=-spread;i<=spread;i+=spread){
+        const ddx = (player.x+i*20)-boss.x, ddy = player.y-boss.y;
+        const d = Math.hypot(ddx,ddy)||1;
+        enemyBullets.push({x:boss.x, y:boss.y+20, vx:(ddx/d)*3.6, vy:(ddy/d)*3.6, w:6, h:6});
+      }
+    }
+
+    for (let j=bullets.length-1;j>=0;j--){
+      const b = bullets[j];
+      if (rectsOverlap({x:b.x,y:b.y,w:b.w,h:b.h}, boss)){
+        bullets.splice(j,1);
+        boss.hp--;
+        spawnParticles(b.x,b.y,'#ff6b6b',4);
+        if (boss.hp<=0){
+          score += 2000;
+          spawnParticles(boss.x, boss.y, '#ffaa3c', 60);
+          boss = null;
+          state = 'levelClear';
+          stateTimer = 0;
+        }
+      }
+    }
+  }
+
+  function updateParticles(){
+    for (let i=particles.length-1;i>=0;i--){
+      const p = particles[i];
+      p.x += p.vx; p.y += p.vy;
+      p.vx *= 0.95; p.vy *= 0.95;
+      p.life--;
+      if (p.life<=0) particles.splice(i,1);
+    }
+  }
+
+  function checkPlayerHit(){
+    if (invincibleTimer > 0) return;
+    const pRect = {x:player.x,y:player.y,w:player.w*0.6,h:player.h*0.6};
+
+    for (let i=enemies.length-1;i>=0;i--){
+      if (rectsOverlap(pRect, enemies[i])){
+        enemies.splice(i,1);
+        hitPlayer();
+        return;
+      }
+    }
+    for (let i=enemyBullets.length-1;i>=0;i--){
+      const b = enemyBullets[i];
+      if (rectsOverlap(pRect, {x:b.x,y:b.y,w:b.w+6,h:b.h+6})){
+        enemyBullets.splice(i,1);
+        hitPlayer();
+        return;
+      }
+    }
+    if (boss && rectsOverlap(pRect, boss)){
+      hitPlayer();
+    }
+  }
+
+  function hitPlayer(){
+    lives--;
+    invincibleTimer = 100;
+    spawnParticles(player.x, player.y, '#ff5050', 20);
+    updateHud();
+    if (lives <= 0){
+      state = 'dead';
+      stateTimer = 0;
+    }
+  }
+
+  function checkLevelComplete(){
+    if (level < MAX_LEVEL){
+      if (spawnQueue.length===0 && enemies.length===0){
+        state = 'levelClear';
+        stateTimer = 0;
+      }
+    }
+  }
+
+  // ---------- Draw ----------
+  function drawStars(){
+    ctx.fillStyle = '#fff';
+    for (const s of stars){
+      s.y += s.speed;
+      if (s.y > H) { s.y = 0; s.x = Math.random()*W; }
+      ctx.globalAlpha = 0.4 + s.size/3;
+      ctx.fillRect(s.x, s.y, s.size, s.size);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPlayer(){
+    if (invincibleTimer>0 && Math.floor(invincibleTimer/4)%2===0) return;
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    ctx.fillStyle = '#39d0ff';
+    ctx.beginPath();
+    ctx.moveTo(0,-18);
+    ctx.lineTo(15,16);
+    ctx.lineTo(0,9);
+    ctx.lineTo(-15,16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#eafcff';
+    ctx.beginPath();
+    ctx.arc(0,-2,4,0,Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#ff9c3c';
+    ctx.beginPath();
+    ctx.moveTo(-7,14); ctx.lineTo(0,26); ctx.lineTo(7,14);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBullets(){
+    ctx.fillStyle = '#c8f7ff';
+    for (const b of bullets) ctx.fillRect(b.x-b.w/2, b.y-b.h/2, b.w, b.h);
+    ctx.fillStyle = '#ff6b6b';
+    for (const b of enemyBullets){
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.w, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  function drawEnemies(){
+    for (const en of enemies){
+      ctx.save();
+      ctx.translate(en.x, en.y);
+      ctx.fillStyle = en.type==='zigzag' ? '#c162ff' : '#ff5c7a';
+      ctx.beginPath();
+      ctx.moveTo(0,14);
+      ctx.lineTo(14,-12);
+      ctx.lineTo(0,-4);
+      ctx.lineTo(-14,-12);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawBoss(){
+    if (!boss) return;
+    ctx.save();
+    ctx.translate(boss.x, boss.y);
+    ctx.fillStyle = '#8b2fd6';
+    ctx.beginPath();
+    ctx.moveTo(-55,-10);
+    ctx.lineTo(-30,-30);
+    ctx.lineTo(30,-30);
+    ctx.lineTo(55,-10);
+    ctx.lineTo(35,30);
+    ctx.lineTo(-35,30);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#ffdf6b';
+    ctx.beginPath();
+    ctx.arc(0,0,14,0,Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+
+    const barW = 300;
+    ctx.fillStyle = 'rgba(255,255,255,0.2)';
+    ctx.fillRect((W-barW)/2, 20, barW, 10);
+    ctx.fillStyle = '#ff5050';
+    ctx.fillRect((W-barW)/2, 20, barW*Math.max(boss.hp,0)/boss.maxHp, 10);
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect((W-barW)/2, 20, barW, 10);
+  }
+
+  function drawParticles(){
+    for (const p of particles){
+      ctx.globalAlpha = Math.max(p.life/25,0);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x-2, p.y-2, 4, 4);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawCenterMsg(text, sub){
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(0, H/2-60, W, 120);
+    ctx.fillStyle = '#7fe0ff';
+    ctx.font = 'bold 30px "Microsoft JhengHei"';
+    ctx.shadowColor = '#2ad2ff';
+    ctx.shadowBlur = 12;
+    ctx.fillText(text, W/2, H/2-6);
+    if (sub){
+      ctx.font = '16px "Microsoft JhengHei"';
+      ctx.fillStyle = '#dff';
+      ctx.shadowBlur = 0;
+      ctx.fillText(sub, W/2, H/2+26);
+    }
+    ctx.restore();
+  }
+
+  // ---------- Main loop ----------
+  function loop(){
+    frame++;
+    ctx.clearRect(0,0,W,H);
+    drawStars();
+
+    if (state === 'playing'){
+      updatePlayer();
+      updateBullets();
+      if (level < MAX_LEVEL) updateEnemies(); else updateBoss();
+      updateParticles();
+      checkPlayerHit();
+      if (level < MAX_LEVEL) checkLevelComplete();
+
+      drawEnemies();
+      drawBoss();
+      drawBullets();
+      drawParticles();
+      drawPlayer();
+    } else if (state === 'levelClear'){
+      stateTimer++;
+      drawEnemies();
+      drawBullets();
+      drawParticles();
+      drawPlayer();
+      drawCenterMsg('第 ' + level + ' 關 過關!', '準備進入下一關...');
+      if (stateTimer > 90){
+        nextLevel();
+      }
+    } else if (state === 'dead'){
+      drawParticles();
+      if (stateTimer === 0){
+        showOverlay('遊戲結束', `最終分數: ${score}<br>抵達關卡: ${level}`, '重新開始');
+      }
+      stateTimer++;
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  loop();
+})();
+</script>
+</body>
+</html>
