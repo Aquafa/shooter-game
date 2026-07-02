@@ -109,6 +109,19 @@
     padding:0;
   }
   #muteBtn:active { transform:scale(0.9); }
+  #hud2 {
+    position:absolute;
+    top:32px; left:8px; right:8px;
+    display:flex;
+    justify-content:flex-start;
+    gap:14px;
+    color:#bfe8ff;
+    font-size:12px;
+    text-shadow:0 0 5px rgba(80,180,255,0.7);
+    pointer-events:none;
+    letter-spacing:0.5px;
+    z-index:5;
+  }
 </style>
 </head>
 <body>
@@ -122,12 +135,18 @@
       <button id="muteBtn" title="靜音切換">🔊</button>
     </span>
   </div>
+  <div id="hud2">
+    <span id="hudWeapon">🔫 Lv1</span>
+    <span id="hudRocket">🚀 x0</span>
+    <span id="hudShield">🛡️ x0</span>
+  </div>
   <div id="overlay">
     <h1>星際闖關射擊</h1>
     <p>
       電腦: 方向鍵 / WASD 移動,空白鍵 或 滑鼠左鍵 射擊(按住連發)。<br>
       手機: 手指拖曳移動,自動連續射擊。<br><br>
-      共 5 關,越後面敵人越多越快,第 5 關是王,擊敗即通關!
+      共 5 關,越後面敵人越多越快,第 5 關是王,擊敗即通關!每關都有不同背景音樂,王關更緊張刺激。<br><br>
+      擊落敵機有機率掉落道具:🔫多重射擊、🚀火箭彈(範圍爆炸)、🛡️防護罩(格擋一次傷害)。
     </p>
     <p id="mobileHint">碰到敵人或敵彈會扣血,3 條命用完遊戲結束。</p>
     <button id="startBtn">開始遊戲</button>
@@ -146,6 +165,9 @@
   const hudLevel = document.getElementById('hudLevel');
   const hudScore = document.getElementById('hudScore');
   const hudLives = document.getElementById('hudLives');
+  const hudWeapon = document.getElementById('hudWeapon');
+  const hudRocket = document.getElementById('hudRocket');
+  const hudShield = document.getElementById('hudShield');
 
   const MAX_LEVEL = 5;
 
@@ -153,7 +175,12 @@
   const SFX = (function(){
     let ctx = null;
     let noiseBuffer = null;
+    let musicGain = null;
     let muted = localStorage.getItem('shooterMuted') === '1';
+    let schedulerTimer = null;
+    let currentTrack = null;
+    let nextNoteTime = 0;
+    let bassStep = 0, leadStep = 0;
 
     function ensureCtx(){
       if (!ctx){
@@ -164,6 +191,9 @@
         noiseBuffer = ctx.createBuffer(1, len, ctx.sampleRate);
         const data = noiseBuffer.getChannelData(0);
         for (let i=0;i<len;i++) data[i] = Math.random()*2-1;
+        musicGain = ctx.createGain();
+        musicGain.gain.value = muted ? 0 : 0.22;
+        musicGain.connect(ctx.destination);
       }
       if (ctx.state === 'suspended') ctx.resume();
     }
@@ -210,18 +240,105 @@
       });
     }
 
+    // ---- Background music (procedural chiptune loops, one per level) ----
+    const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+    function nf(note, octave){
+      const idx = NOTE_NAMES.indexOf(note);
+      const semis = (octave-4)*12 + (idx-9);
+      return 440*Math.pow(2, semis/12);
+    }
+
+    const TRACKS = {
+      1: { bpm:118, bassType:'triangle', leadType:'square', bassVol:0.09, leadVol:0.045,
+           bass:[nf('C',3),nf('C',3),nf('G',2),nf('G',2),nf('A',2),nf('A',2),nf('G',2),nf('G',2)],
+           lead:[nf('C',5),nf('E',5),nf('G',5),nf('E',5), nf('C',5),nf('E',5),nf('G',5),nf('E',5),
+                 nf('A',4),nf('C',5),nf('E',5),nf('C',5), nf('G',4),nf('C',5),nf('E',5),nf('D',5)] },
+      2: { bpm:132, bassType:'triangle', leadType:'square', bassVol:0.09, leadVol:0.045,
+           bass:[nf('A',2),nf('A',2),nf('F',2),nf('F',2),nf('G',2),nf('G',2),nf('E',2),nf('E',2)],
+           lead:[nf('A',4),nf('C',5),nf('E',5),nf('C',5), nf('F',4),nf('A',4),nf('C',5),nf('A',4),
+                 nf('G',4),nf('B',4),nf('D',5),nf('B',4), nf('E',4),nf('G',4),nf('B',4),nf('C',5)] },
+      3: { bpm:146, bassType:'sawtooth', leadType:'square', bassVol:0.08, leadVol:0.05,
+           bass:[nf('D',3),nf('D',3),nf('A',2),nf('A',2),nf('B',2),nf('B',2),nf('C',3),nf('C',3)],
+           lead:[nf('D',5),nf('F',5),nf('A',5),nf('F',5), nf('A',4),nf('D',5),nf('F',5),nf('D',5),
+                 nf('B',4),nf('D',5),nf('F',5),nf('D',5), nf('C',5),nf('E',5),nf('G',5),nf('F',5)] },
+      4: { bpm:160, bassType:'sawtooth', leadType:'square', bassVol:0.09, leadVol:0.055,
+           bass:[nf('E',3),nf('E',3),nf('C',3),nf('C',3),nf('D',3),nf('D',3),nf('B',2),nf('B',2)],
+           lead:[nf('E',5),nf('G',5),nf('B',5),nf('G',5), nf('C',5),nf('E',5),nf('G',5),nf('E',5),
+                 nf('D',5),nf('F',5),nf('A',5),nf('F',5), nf('B',4),nf('D',5),nf('F',5),nf('E',5)] },
+      boss: { bpm:186, bassType:'sawtooth', leadType:'square', bassVol:0.12, leadVol:0.06,
+           bass:[nf('D',2),nf('D',2),nf('D',2),nf('D',2),nf('A',2),nf('A',2),nf('D',2),nf('C',2)],
+           lead:[nf('D',5),nf('D#',5),nf('D',5),nf('C',5), nf('D',5),nf('D#',5),nf('F',5),nf('D#',5),
+                 nf('A',4),nf('A#',4),nf('A',4),nf('G',4), nf('A',4),nf('C',5),nf('D',5),nf('C',5)] }
+    };
+
+    function scheduleMusicNote(freq, time, duration, type, vol){
+      if (!freq) return;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, time);
+      gain.gain.setValueAtTime(0, time);
+      gain.gain.linearRampToValueAtTime(vol, time+0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0005, time+duration);
+      osc.connect(gain).connect(musicGain);
+      osc.start(time);
+      osc.stop(time+duration+0.03);
+    }
+
+    function schedulerTick(){
+      if (!currentTrack || !ctx) return;
+      const track = currentTrack;
+      const beatDur = 60/track.bpm;
+      while (nextNoteTime < ctx.currentTime + 0.15){
+        const bassFreq = track.bass[bassStep % track.bass.length];
+        scheduleMusicNote(bassFreq, nextNoteTime, beatDur*0.92, track.bassType, track.bassVol);
+        for (let k=0;k<2;k++){
+          const leadFreq = track.lead[leadStep % track.lead.length];
+          const t = nextNoteTime + k*(beatDur/2);
+          scheduleMusicNote(leadFreq, t, (beatDur/2)*0.82, track.leadType, track.leadVol);
+          leadStep++;
+        }
+        bassStep++;
+        nextNoteTime += beatDur;
+      }
+    }
+
+    function playTrack(key){
+      ensureCtx();
+      if (!ctx) return;
+      if (currentTrack === TRACKS[key]) return;
+      currentTrack = TRACKS[key];
+      bassStep = 0; leadStep = 0;
+      nextNoteTime = ctx.currentTime + 0.05;
+      if (!schedulerTimer) schedulerTimer = setInterval(schedulerTick, 40);
+    }
+
+    function stopMusic(){
+      currentTrack = null;
+      if (schedulerTimer){ clearInterval(schedulerTimer); schedulerTimer = null; }
+    }
+
     return {
       init(){ ensureCtx(); },
-      setMuted(v){ muted = v; localStorage.setItem('shooterMuted', v?'1':'0'); },
+      setMuted(v){
+        muted = v;
+        localStorage.setItem('shooterMuted', v?'1':'0');
+        if (musicGain) musicGain.gain.setTargetAtTime(v?0:0.22, ctx.currentTime, 0.05);
+      },
       isMuted(){ return muted; },
       shoot(){ tone(880, 0.07, {type:'square', freqEnd:520, volume:0.05}); },
       hit(){ tone(300, 0.05, {type:'square', freqEnd:200, volume:0.05}); },
       enemyExplode(){ noiseBurst(0.22, {freqStart:2200, freqEnd:200, volume:0.2}); },
       bossExplode(){ noiseBurst(0.6, {freqStart:2600, freqEnd:80, volume:0.35}); },
+      rocketExplode(){ noiseBurst(0.35, {freqStart:2400, freqEnd:150, volume:0.3}); },
+      pickup(){ sequence([660,880,1180], 0.08, 60, {type:'triangle', volume:0.12}); },
+      shieldBlock(){ tone(700, 0.12, {type:'sine', freqEnd:900, volume:0.15}); },
       hurt(){ tone(160, 0.25, {type:'sawtooth', freqEnd:60, volume:0.22}); },
       levelClear(){ sequence([523,659,784,1047], 0.16, 90, {type:'triangle', volume:0.18}); },
       gameOver(){ sequence([400,340,280,200], 0.28, 140, {type:'sawtooth', volume:0.18}); },
-      win(){ sequence([523,659,784,1047,1319], 0.22, 110, {type:'triangle', volume:0.2}); }
+      win(){ sequence([523,659,784,1047,1319], 0.22, 110, {type:'triangle', volume:0.2}); },
+      playMusic(levelOrKey){ playTrack(levelOrKey >= MAX_LEVEL ? 'boss' : levelOrKey); },
+      stopMusic(){ stopMusic(); }
     };
   })();
 
@@ -252,10 +369,19 @@
   let invincibleTimer = 0;
   let stateTimer = 0;
 
+  let weaponLevel = 1;
+  let rockets = 0;
+  let shieldHits = 0;
+  let rocketCooldown = 0;
+
   function resetGameState(){
     score = 0;
     lives = 3;
     level = 1;
+    weaponLevel = 1;
+    rockets = 0;
+    shieldHits = 0;
+    rocketCooldown = 0;
   }
 
   function initStars(){
@@ -313,7 +439,8 @@
         speed: 2.2,
         dir: 1,
         cooldown: 0,
-        entering: true
+        entering: true,
+        dropThresholds: [Math.floor(220*0.66), Math.floor(220*0.33)]
       };
     }
   }
@@ -326,6 +453,7 @@
     state = 'playing';
     overlay.classList.add('hidden');
     updateHud();
+    SFX.playMusic(level);
   }
 
   function nextLevel(){
@@ -333,6 +461,7 @@
     if (level > MAX_LEVEL){
       state = 'win';
       showOverlay('全部過關!', `太厲害了,恭喜通過全部 ${MAX_LEVEL} 關!<br>最終分數: ${score}`, '再玩一次');
+      SFX.stopMusic();
       SFX.win();
       return;
     }
@@ -340,12 +469,16 @@
     buildLevel(level);
     state = 'playing';
     updateHud();
+    SFX.playMusic(level);
   }
 
   function updateHud(){
     hudLevel.textContent = '關卡 ' + level + (level>MAX_LEVEL?'':(level===MAX_LEVEL?' (BOSS)':''));
     hudScore.textContent = '分數 ' + score;
     hudLives.textContent = '❤'.repeat(Math.max(lives,0)) + '♡'.repeat(Math.max(3-lives,0));
+    hudWeapon.textContent = '🔫 Lv' + weaponLevel;
+    hudRocket.textContent = '🚀 x' + rockets;
+    hudShield.textContent = '🛡️ x' + shieldHits;
   }
 
   function showOverlay(title, text, btnText){
@@ -441,6 +574,61 @@
     });
   }
 
+  function spawnPowerupAt(x,y){
+    const roll = Math.random();
+    const type = roll < 0.4 ? 'multi' : (roll < 0.75 ? 'rocket' : 'shield');
+    powerups.push({x,y,w:20,h:20,vy:1.6,type});
+  }
+
+  function maybeDropPowerup(x,y){
+    if (Math.random() < 0.16) spawnPowerupAt(x,y);
+  }
+
+  function applyPowerup(type){
+    SFX.pickup();
+    if (type==='multi'){
+      weaponLevel = Math.min(weaponLevel+1, 3);
+    } else if (type==='rocket'){
+      rockets = Math.min(rockets+3, 9);
+    } else if (type==='shield'){
+      shieldHits = Math.min(shieldHits+1, 3);
+    }
+    updateHud();
+  }
+
+  function killEnemy(i){
+    const en = enemies[i];
+    score += en.type==='zigzag'?150:100;
+    spawnParticles(en.x,en.y,'#ffaa3c',14);
+    maybeDropPowerup(en.x,en.y);
+    enemies.splice(i,1);
+    SFX.enemyExplode();
+  }
+
+  function applyRocketExplosion(x,y){
+    spawnParticles(x,y,'#ffb347',22);
+    SFX.rocketExplode();
+    const RADIUS = 60;
+    for (let i=enemies.length-1;i>=0;i--){
+      const en = enemies[i];
+      if (Math.hypot(en.x-x, en.y-y) < RADIUS){
+        score += en.type==='zigzag'?150:100;
+        spawnParticles(en.x,en.y,'#ffaa3c',10);
+        maybeDropPowerup(en.x,en.y);
+        enemies.splice(i,1);
+      }
+    }
+  }
+
+  function finishBoss(){
+    score += 2000;
+    spawnParticles(boss.x, boss.y, '#ffaa3c', 60);
+    boss = null;
+    state = 'levelClear';
+    stateTimer = 0;
+    SFX.bossExplode();
+  }
+
   // ---------- Update ----------
   function updatePlayer(){
     if (invincibleTimer>0) invincibleTimer--;
@@ -469,20 +657,45 @@
     player.y = Math.max(player.h/2, Math.min(H-player.h/2, player.y));
 
     player.cooldown--;
+    if (rocketCooldown>0) rocketCooldown--;
     const wantsFire = keys[' ']||keys['space']||pointerActive;
     if (wantsFire && player.cooldown<=0){
-      bullets.push({x:player.x-9, y:player.y-18, vy:-9, w:4, h:12});
-      bullets.push({x:player.x+9, y:player.y-18, vy:-9, w:4, h:12});
+      fireBullets();
       player.cooldown = player.fireRate;
       SFX.shoot();
+    }
+    if (wantsFire && rockets>0 && rocketCooldown<=0){
+      bullets.push({x:player.x, y:player.y-20, vx:0, vy:-7, w:8, h:20, rocket:true});
+      rockets--;
+      rocketCooldown = 45;
+      updateHud();
+    }
+  }
+
+  function fireBullets(){
+    const baseY = player.y-18;
+    if (weaponLevel<=1){
+      bullets.push({x:player.x-9, y:baseY, vx:0, vy:-9, w:4, h:12});
+      bullets.push({x:player.x+9, y:baseY, vx:0, vy:-9, w:4, h:12});
+    } else if (weaponLevel===2){
+      bullets.push({x:player.x, y:baseY-4, vx:0, vy:-9.5, w:4, h:12});
+      bullets.push({x:player.x-10, y:baseY, vx:-1.6, vy:-9, w:4, h:12});
+      bullets.push({x:player.x+10, y:baseY, vx:1.6, vy:-9, w:4, h:12});
+    } else {
+      bullets.push({x:player.x, y:baseY-4, vx:0, vy:-9.5, w:4, h:12});
+      bullets.push({x:player.x-8, y:baseY, vx:-1.2, vy:-9, w:4, h:12});
+      bullets.push({x:player.x+8, y:baseY, vx:1.2, vy:-9, w:4, h:12});
+      bullets.push({x:player.x-16, y:baseY+4, vx:-2.6, vy:-8.6, w:4, h:12});
+      bullets.push({x:player.x+16, y:baseY+4, vx:2.6, vy:-8.6, w:4, h:12});
     }
   }
 
   function updateBullets(){
     for (let i=bullets.length-1;i>=0;i--){
       const b = bullets[i];
+      b.x += b.vx||0;
       b.y += b.vy;
-      if (b.y < -20) bullets.splice(i,1);
+      if (b.y < -20 || b.x<-20 || b.x>W+20) bullets.splice(i,1);
     }
     for (let i=enemyBullets.length-1;i>=0;i--){
       const b = enemyBullets[i];
@@ -501,6 +714,8 @@
         spawnEnemy(s.type, s.col, totalCols);
       }
     }
+
+    const explosions = [];
 
     for (let i=enemies.length-1;i>=0;i--){
       const en = enemies[i];
@@ -528,20 +743,23 @@
         const b = bullets[j];
         if (rectsOverlap({x:b.x,y:b.y,w:b.w,h:b.h}, en)){
           bullets.splice(j,1);
-          en.hp--;
-          spawnParticles(b.x,b.y,'#7fe0ff',4);
-          if (en.hp<=0){
-            score += en.type==='zigzag'?150:100;
-            spawnParticles(en.x,en.y,'#ffaa3c',14);
-            enemies.splice(i,1);
-            SFX.enemyExplode();
+          if (b.rocket){
+            explosions.push({x:b.x, y:b.y});
           } else {
-            SFX.hit();
+            en.hp--;
+            spawnParticles(b.x,b.y,'#7fe0ff',4);
+            if (en.hp<=0){
+              killEnemy(i);
+            } else {
+              SFX.hit();
+            }
           }
           break;
         }
       }
     }
+
+    for (const ex of explosions) applyRocketExplosion(ex.x, ex.y);
   }
 
   function updateBoss(){
@@ -565,22 +783,41 @@
       }
     }
 
+    while (boss.dropThresholds && boss.dropThresholds.length && boss.hp <= boss.dropThresholds[0]){
+      boss.dropThresholds.shift();
+      spawnPowerupAt(boss.x + (Math.random()-0.5)*60, boss.y+40);
+    }
+
     for (let j=bullets.length-1;j>=0;j--){
       const b = bullets[j];
       if (rectsOverlap({x:b.x,y:b.y,w:b.w,h:b.h}, boss)){
         bullets.splice(j,1);
-        boss.hp--;
-        spawnParticles(b.x,b.y,'#ff6b6b',4);
-        if (boss.hp<=0){
-          score += 2000;
-          spawnParticles(boss.x, boss.y, '#ffaa3c', 60);
-          boss = null;
-          state = 'levelClear';
-          stateTimer = 0;
-          SFX.bossExplode();
+        if (b.rocket){
+          spawnParticles(b.x,b.y,'#ffb347',18);
+          SFX.rocketExplode();
+          boss.hp -= 14;
         } else {
+          spawnParticles(b.x,b.y,'#ff6b6b',4);
+          boss.hp--;
+        }
+        if (boss.hp<=0){
+          finishBoss();
+          break;
+        } else if (!b.rocket){
           SFX.hit();
         }
+      }
+    }
+  }
+
+  function updatePowerups(){
+    for (let i=powerups.length-1;i>=0;i--){
+      const p = powerups[i];
+      p.y += p.vy;
+      if (p.y > H+20){ powerups.splice(i,1); continue; }
+      if (rectsOverlap({x:player.x,y:player.y,w:player.w,h:player.h}, p)){
+        applyPowerup(p.type);
+        powerups.splice(i,1);
       }
     }
   }
@@ -620,6 +857,14 @@
   }
 
   function hitPlayer(){
+    if (shieldHits > 0){
+      shieldHits--;
+      invincibleTimer = 60;
+      spawnParticles(player.x, player.y, '#4be3ff', 16);
+      SFX.shieldBlock();
+      updateHud();
+      return;
+    }
     lives--;
     invincibleTimer = 100;
     spawnParticles(player.x, player.y, '#ff5050', 20);
@@ -628,6 +873,7 @@
       state = 'dead';
       stateTimer = 0;
       SFX.gameOver();
+      SFX.stopMusic();
     } else {
       SFX.hurt();
     }
@@ -659,6 +905,13 @@
     if (invincibleTimer>0 && Math.floor(invincibleTimer/4)%2===0) return;
     ctx.save();
     ctx.translate(player.x, player.y);
+    if (shieldHits > 0){
+      ctx.strokeStyle = 'rgba(75,227,255,0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0,0,24,0,Math.PI*2);
+      ctx.stroke();
+    }
     ctx.fillStyle = '#39d0ff';
     ctx.beginPath();
     ctx.moveTo(0,-18);
@@ -680,13 +933,43 @@
   }
 
   function drawBullets(){
-    ctx.fillStyle = '#c8f7ff';
-    for (const b of bullets) ctx.fillRect(b.x-b.w/2, b.y-b.h/2, b.w, b.h);
+    for (const b of bullets){
+      if (b.rocket){
+        ctx.fillStyle = '#ffb347';
+        ctx.beginPath();
+        ctx.ellipse(b.x, b.y, b.w/2, b.h/2, 0, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,140,20,0.5)';
+        ctx.fillRect(b.x-2, b.y+b.h/2-2, 4, 10);
+      } else {
+        ctx.fillStyle = '#c8f7ff';
+        ctx.fillRect(b.x-b.w/2, b.y-b.h/2, b.w, b.h);
+      }
+    }
     ctx.fillStyle = '#ff6b6b';
     for (const b of enemyBullets){
       ctx.beginPath();
       ctx.arc(b.x, b.y, b.w, 0, Math.PI*2);
       ctx.fill();
+    }
+  }
+
+  function drawPowerups(){
+    const colors = {multi:'#39d0ff', rocket:'#ff9c3c', shield:'#4bff8f'};
+    const labels = {multi:'M', rocket:'R', shield:'S'};
+    for (const p of powerups){
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.fillStyle = colors[p.type];
+      ctx.beginPath();
+      ctx.arc(0,0,11,0,Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = '#03131a';
+      ctx.font = 'bold 12px "Microsoft JhengHei"';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(labels[p.type], 0, 1);
+      ctx.restore();
     }
   }
 
@@ -773,12 +1056,14 @@
       updatePlayer();
       updateBullets();
       if (level < MAX_LEVEL) updateEnemies(); else updateBoss();
+      updatePowerups();
       updateParticles();
       checkPlayerHit();
       if (level < MAX_LEVEL) checkLevelComplete();
 
       drawEnemies();
       drawBoss();
+      drawPowerups();
       drawBullets();
       drawParticles();
       drawPlayer();
