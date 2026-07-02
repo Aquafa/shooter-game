@@ -40,10 +40,12 @@
     text-shadow:0 0 6px rgba(80,180,255,0.8);
     pointer-events:none;
     letter-spacing:1px;
+    z-index:5;
   }
   #overlay {
     position:absolute;
     inset:0;
+    z-index:2;
     display:flex;
     flex-direction:column;
     align-items:center;
@@ -85,6 +87,28 @@
     font-size:12px;
     color:#7a8ba0;
   }
+  #hudRight {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    pointer-events:auto;
+  }
+  #muteBtn {
+    background:rgba(255,255,255,0.08);
+    border:1px solid rgba(255,255,255,0.25);
+    border-radius:50%;
+    width:26px;
+    height:26px;
+    font-size:14px;
+    line-height:1;
+    color:#e8f6ff;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:0;
+  }
+  #muteBtn:active { transform:scale(0.9); }
 </style>
 </head>
 <body>
@@ -93,7 +117,10 @@
   <div id="hud">
     <span id="hudLevel">關卡 1</span>
     <span id="hudScore">分數 0</span>
-    <span id="hudLives">❤❤❤</span>
+    <span id="hudRight">
+      <span id="hudLives">❤❤❤</span>
+      <button id="muteBtn" title="靜音切換">🔊</button>
+    </span>
   </div>
   <div id="overlay">
     <h1>星際闖關射擊</h1>
@@ -115,11 +142,97 @@
 
   const overlay = document.getElementById('overlay');
   const startBtn = document.getElementById('startBtn');
+  const muteBtn = document.getElementById('muteBtn');
   const hudLevel = document.getElementById('hudLevel');
   const hudScore = document.getElementById('hudScore');
   const hudLives = document.getElementById('hudLives');
 
   const MAX_LEVEL = 5;
+
+  // ---------- Audio ----------
+  const SFX = (function(){
+    let ctx = null;
+    let noiseBuffer = null;
+    let muted = localStorage.getItem('shooterMuted') === '1';
+
+    function ensureCtx(){
+      if (!ctx){
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        ctx = new AC();
+        const len = Math.floor(ctx.sampleRate * 0.5);
+        noiseBuffer = ctx.createBuffer(1, len, ctx.sampleRate);
+        const data = noiseBuffer.getChannelData(0);
+        for (let i=0;i<len;i++) data[i] = Math.random()*2-1;
+      }
+      if (ctx.state === 'suspended') ctx.resume();
+    }
+
+    function tone(freq, duration, opts={}){
+      if (muted || !ctx) return;
+      const t0 = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = opts.type || 'square';
+      osc.frequency.setValueAtTime(freq, t0);
+      if (opts.freqEnd !== undefined){
+        osc.frequency.exponentialRampToValueAtTime(Math.max(opts.freqEnd,1), t0+duration);
+      }
+      const vol = opts.volume !== undefined ? opts.volume : 0.15;
+      gain.gain.setValueAtTime(vol, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0+duration);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0+duration);
+    }
+
+    function noiseBurst(duration, opts={}){
+      if (muted || !ctx || !noiseBuffer) return;
+      const t0 = ctx.currentTime;
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBuffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(opts.freqStart || 1800, t0);
+      filter.frequency.exponentialRampToValueAtTime(opts.freqEnd || 200, t0+duration);
+      const gain = ctx.createGain();
+      const vol = opts.volume !== undefined ? opts.volume : 0.3;
+      gain.gain.setValueAtTime(vol, t0);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0+duration);
+      src.connect(filter).connect(gain).connect(ctx.destination);
+      src.start(t0);
+      src.stop(t0+duration);
+    }
+
+    function sequence(freqs, noteDur, gap, opts={}){
+      freqs.forEach((f,i)=>{
+        setTimeout(()=>tone(f, noteDur, opts), i*gap);
+      });
+    }
+
+    return {
+      init(){ ensureCtx(); },
+      setMuted(v){ muted = v; localStorage.setItem('shooterMuted', v?'1':'0'); },
+      isMuted(){ return muted; },
+      shoot(){ tone(880, 0.07, {type:'square', freqEnd:520, volume:0.05}); },
+      hit(){ tone(300, 0.05, {type:'square', freqEnd:200, volume:0.05}); },
+      enemyExplode(){ noiseBurst(0.22, {freqStart:2200, freqEnd:200, volume:0.2}); },
+      bossExplode(){ noiseBurst(0.6, {freqStart:2600, freqEnd:80, volume:0.35}); },
+      hurt(){ tone(160, 0.25, {type:'sawtooth', freqEnd:60, volume:0.22}); },
+      levelClear(){ sequence([523,659,784,1047], 0.16, 90, {type:'triangle', volume:0.18}); },
+      gameOver(){ sequence([400,340,280,200], 0.28, 140, {type:'sawtooth', volume:0.18}); },
+      win(){ sequence([523,659,784,1047,1319], 0.22, 110, {type:'triangle', volume:0.2}); }
+    };
+  })();
+
+  function updateMuteBtn(){
+    muteBtn.textContent = SFX.isMuted() ? '🔇' : '🔊';
+  }
+  updateMuteBtn();
+  muteBtn.addEventListener('click', () => {
+    SFX.setMuted(!SFX.isMuted());
+    updateMuteBtn();
+  });
 
   let keys = {};
   let pointerActive = false;
@@ -220,6 +333,7 @@
     if (level > MAX_LEVEL){
       state = 'win';
       showOverlay('全部過關!', `太厲害了,恭喜通過全部 ${MAX_LEVEL} 關!<br>最終分數: ${score}`, '再玩一次');
+      SFX.win();
       return;
     }
     initPlayer();
@@ -289,6 +403,7 @@
   }, {passive:false});
 
   startBtn.addEventListener('click', () => {
+    SFX.init();
     if (state === 'menu' || state === 'dead' || state === 'win'){
       startGame();
     }
@@ -359,6 +474,7 @@
       bullets.push({x:player.x-9, y:player.y-18, vy:-9, w:4, h:12});
       bullets.push({x:player.x+9, y:player.y-18, vy:-9, w:4, h:12});
       player.cooldown = player.fireRate;
+      SFX.shoot();
     }
   }
 
@@ -418,6 +534,9 @@
             score += en.type==='zigzag'?150:100;
             spawnParticles(en.x,en.y,'#ffaa3c',14);
             enemies.splice(i,1);
+            SFX.enemyExplode();
+          } else {
+            SFX.hit();
           }
           break;
         }
@@ -458,6 +577,9 @@
           boss = null;
           state = 'levelClear';
           stateTimer = 0;
+          SFX.bossExplode();
+        } else {
+          SFX.hit();
         }
       }
     }
@@ -505,6 +627,9 @@
     if (lives <= 0){
       state = 'dead';
       stateTimer = 0;
+      SFX.gameOver();
+    } else {
+      SFX.hurt();
     }
   }
 
@@ -513,6 +638,7 @@
       if (spawnQueue.length===0 && enemies.length===0){
         state = 'levelClear';
         stateTimer = 0;
+        SFX.levelClear();
       }
     }
   }
